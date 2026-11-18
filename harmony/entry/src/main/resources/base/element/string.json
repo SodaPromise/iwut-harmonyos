@@ -1,0 +1,9 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "掌上吾理客户端" },
+    { "name": "calendar_permission", "value": "将课程和考试写入系统日历，以同步日程和发送提前提醒" },
+    { "name": "schedule_card", "value": "今日课程" },
+    { "name": "schedule_card_desc", "value": "在桌面查看掌上吾理的今日课表" },
+    { "name": "wlan_shortcut", "value": "校园网连接" }
+  ]
+}

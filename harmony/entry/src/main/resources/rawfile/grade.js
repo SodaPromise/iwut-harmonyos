@@ -1,0 +1,237 @@
+(function() {
+if (!location.href.startsWith("https://jwxt.whut.edu.cn/jwapp/sys/cjcx/")) return;
+function receive(raw) {
+const msg = JSON.parse(raw);
+if (!["gradeRows","error"].includes(msg.type)) return;
+try { window.__iwutAcademicResult = JSON.stringify(msg.type === 'gradeRows' ? {type:'gradeRows', grades:normalizeGradeRowsMessage(msg)} : msg); }
+catch (_) { window.__iwutAcademicResult = JSON.stringify({type:'error',message:'无法解析教务系统返回的数据'}); }
+}
+const GRADE_LOGIN_URL = "https://zhlgd.whut.edu.cn/tpass/login?service=https%3A%2F%2Fjwxt.whut.edu.cn%2Fjwapp%2Fsys%2Fcjcx%2F*default%2Findex.do%3FforceCas%3D1";
+const GRADE_APP_PREFIX = "https://jwxt.whut.edu.cn/jwapp/sys/cjcx/";
+const GRADE_QUERY_SETTINGS = [
+    {
+        name: "SFYX",
+        caption: "是否有效",
+        linkOpt: "AND",
+        builderList: "cbl_m_List",
+        builder: "m_value_equal",
+        value: "1",
+        value_display: "是",
+    },
+    {
+        name: "SHOWMAXCJ",
+        caption: "显示最高成绩",
+        linkOpt: "AND",
+        builderList: "cbl_String",
+        builder: "equal",
+        value: 0,
+        value_display: "否",
+    },
+];
+function jsString(value) {
+    return JSON.stringify(value);
+}
+function buildGradeFetchScript(messages) {
+    return `(async function() {
+  function post(payload) {
+    receive(JSON.stringify(payload));
+  }
+  async function queryPage(pageNumber) {
+    var controller = new AbortController();
+    var timer = setTimeout(function() { controller.abort(); }, 20000);
+    var body = new URLSearchParams();
+    body.append('querySetting', ${jsString(JSON.stringify(GRADE_QUERY_SETTINGS))});
+    body.append('*json', '1');
+    body.append('*order', '-XNXQDM,-KCH,-KXH');
+    body.append('pageSize', '100');
+    body.append('pageNumber', String(pageNumber));
+    try {
+      var response = await fetch('/jwapp/sys/cjcx/modules/cjcx/xscjcx.do', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Accept': 'application/json, text/javascript, */*; q=0.01',
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'X-Requested-With': 'XMLHttpRequest'
+        },
+        body: body.toString(),
+        signal: controller.signal
+      });
+      if (!response.ok) {
+        var httpError = new Error('HTTP ' + response.status);
+        httpError.code = 'HTTP_' + response.status;
+        throw httpError;
+      }
+      var json = await response.json();
+      var page = json && json.datas && json.datas.xscjcx;
+      if (!page || !Array.isArray(page.rows)) {
+        var reason = json && (json.msg || json.message);
+        var responseError = new Error(reason ? String(reason) : ${jsString(messages.fetchFailed)});
+        responseError.code = 'INVALID_RESPONSE';
+        throw responseError;
+      }
+      return page;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  function approvedFields(row) {
+    return {
+      KCM: row && row.KCM,
+      XSKCH: row && row.XSKCH,
+      KCXZDM_DISPLAY: row && row.KCXZDM_DISPLAY,
+      ZCJ: row && row.ZCJ,
+      XF: row && row.XF,
+      CXCKDM_DISPLAY: row && row.CXCKDM_DISPLAY,
+      XNXQDM_DISPLAY: row && row.XNXQDM_DISPLAY
+    };
+  }
+  try {
+    var first = await queryPage(1);
+    var rows = first.rows.slice();
+    var total = Number(first.totalSize) || rows.length;
+    var pageSize = Number(first.pageSize) || 100;
+    var pages = Math.max(1, Math.ceil(total / pageSize));
+    for (var pageNumber = 2; pageNumber <= pages; pageNumber += 1) {
+      var next = await queryPage(pageNumber);
+      rows = rows.concat(next.rows);
+    }
+    post({ type: 'gradeRows', rows: rows.map(approvedFields) });
+  } catch (error) {
+    var isTimeout = error && error.name === 'AbortError';
+    var isNetworkFailure = error && error.name === 'TypeError' && error.message === 'Failed to fetch';
+    post({
+      type: 'error',
+      code: isTimeout
+        ? 'NETWORK_TIMEOUT'
+        : (isNetworkFailure ? 'NETWORK_FAILURE' : ((error && error.code) ? String(error.code) : 'SCRIPT_FAILURE')),
+      message: isTimeout
+        ? ${jsString(messages.queryTimeout)}
+        : ((error && error.message) ? String(error.message) : ${jsString(messages.fetchFailed)}),
+      name: (error && error.name) ? String(error.name) : ''
+    });
+  }
+})(); true;`;
+}
+function isGradeRowsMessage(msg) {
+    return (typeof msg === "object" &&
+        msg !== null &&
+        "type" in msg &&
+        msg.type === "gradeRows");
+}
+function clean(value) {
+    const text = value == null ? "" : String(value).trim();
+    if (!text || text === "null")
+        return "";
+    return text;
+}
+function normalizeGrade(row) {
+    const term = clean(row.XNXQDM_DISPLAY);
+    const courseName = clean(row.KCM);
+    const courseCode = clean(row.XSKCH);
+    const courseNature = clean(row.KCXZDM_DISPLAY);
+    const totalScore = clean(row.ZCJ);
+    const credits = clean(row.XF);
+    const retakeLabel = clean(row.CXCKDM_DISPLAY);
+    return {
+        id: [term, courseCode || courseName, retakeLabel]
+            .map(encodeURIComponent)
+            .join("|"),
+        term,
+        courseName,
+        courseCode,
+        courseNature,
+        totalScore,
+        credits,
+        retakeLabel,
+    };
+}
+function normalizeGradeRowsMessage(msg) {
+    const rows = Array.isArray(msg.rows)
+        ? msg.rows.filter((row) => typeof row === "object" && row !== null)
+        : [];
+    return rows
+        .map(normalizeGrade)
+        .filter((grade) => grade.term && (grade.courseCode || grade.courseName));
+}
+(async function() {
+  function post(payload) {
+    receive(JSON.stringify(payload));
+  }
+  async function queryPage(pageNumber) {
+    var controller = new AbortController();
+    var timer = setTimeout(function() { controller.abort(); }, 20000);
+    var body = new URLSearchParams();
+    body.append('querySetting', "[{\"name\":\"SFYX\",\"caption\":\"是否有效\",\"linkOpt\":\"AND\",\"builderList\":\"cbl_m_List\",\"builder\":\"m_value_equal\",\"value\":\"1\",\"value_display\":\"是\"},{\"name\":\"SHOWMAXCJ\",\"caption\":\"显示最高成绩\",\"linkOpt\":\"AND\",\"builderList\":\"cbl_String\",\"builder\":\"equal\",\"value\":0,\"value_display\":\"否\"}]");
+    body.append('*json', '1');
+    body.append('*order', '-XNXQDM,-KCH,-KXH');
+    body.append('pageSize', '100');
+    body.append('pageNumber', String(pageNumber));
+    try {
+      var response = await fetch('/jwapp/sys/cjcx/modules/cjcx/xscjcx.do', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Accept': 'application/json, text/javascript, */*; q=0.01',
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'X-Requested-With': 'XMLHttpRequest'
+        },
+        body: body.toString(),
+        signal: controller.signal
+      });
+      if (!response.ok) {
+        var httpError = new Error('HTTP ' + response.status);
+        httpError.code = 'HTTP_' + response.status;
+        throw httpError;
+      }
+      var json = await response.json();
+      var page = json && json.datas && json.datas.xscjcx;
+      if (!page || !Array.isArray(page.rows)) {
+        var reason = json && (json.msg || json.message);
+        var responseError = new Error(reason ? String(reason) : "成绩查询失败。");
+        responseError.code = 'INVALID_RESPONSE';
+        throw responseError;
+      }
+      return page;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  function approvedFields(row) {
+    return {
+      KCM: row && row.KCM,
+      XSKCH: row && row.XSKCH,
+      KCXZDM_DISPLAY: row && row.KCXZDM_DISPLAY,
+      ZCJ: row && row.ZCJ,
+      XF: row && row.XF,
+      CXCKDM_DISPLAY: row && row.CXCKDM_DISPLAY,
+      XNXQDM_DISPLAY: row && row.XNXQDM_DISPLAY
+    };
+  }
+  try {
+    var first = await queryPage(1);
+    var rows = first.rows.slice();
+    var total = Number(first.totalSize) || rows.length;
+    var pageSize = Number(first.pageSize) || 100;
+    var pages = Math.max(1, Math.ceil(total / pageSize));
+    for (var pageNumber = 2; pageNumber <= pages; pageNumber += 1) {
+      var next = await queryPage(pageNumber);
+      rows = rows.concat(next.rows);
+    }
+    post({ type: 'gradeRows', rows: rows.map(approvedFields) });
+  } catch (error) {
+    var isTimeout = error && error.name === 'AbortError';
+    var isNetworkFailure = error && error.name === 'TypeError' && error.message === 'Failed to fetch';
+    post({
+      type: 'error',
+      code: isTimeout
+        ? 'NETWORK_TIMEOUT'
+        : (isNetworkFailure ? 'NETWORK_FAILURE' : ((error && error.code) ? String(error.code) : 'SCRIPT_FAILURE')),
+      message: isTimeout
+        ? "成绩查询超时。"
+        : ((error && error.message) ? String(error.message) : "成绩查询失败。"),
+      name: (error && error.name) ? String(error.name) : ''
+    });
+  }
+})(); true;
+})();

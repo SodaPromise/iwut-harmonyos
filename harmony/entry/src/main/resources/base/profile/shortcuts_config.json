@@ -1,0 +1,17 @@
+{
+  "shortcuts": [
+    {
+      "shortcutId": "campus_wlan",
+      "label": "$string:wlan_shortcut",
+      "icon": "$media:start_icon",
+      "wants": [
+        {
+          "bundleName": "net.tokenteam.iwut.harmony",
+          "moduleName": "entry",
+          "abilityName": "EntryAbility",
+          "parameters": { "iwutShortcut": "wlan" }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,261 @@
+(function() {
+if (!location.href.startsWith("https://jwxt.whut.edu.cn/jwapp/sys/wdkwapp/")) return;
+function receive(raw) {
+const msg = JSON.parse(raw);
+if (!["examRows","error"].includes(msg.type)) return;
+try { window.__iwutAcademicResult = JSON.stringify(msg.type === 'examRows' ? Object.assign({type:'examRows'}, normalizeExamRowsMessage(msg)) : msg); }
+catch (_) { window.__iwutAcademicResult = JSON.stringify({type:'error',message:'无法解析教务系统返回的数据'}); }
+}
+const EXAM_LOGIN_URL = "https://zhlgd.whut.edu.cn/tpass/login?service=https%3A%2F%2Fjwxt.whut.edu.cn%2Fjwapp%2Fsys%2Fwdkwapp%2F*default%2Findex.do%3FforceCas%3D1%23%2Fwdks";
+const EXAM_APP_PREFIX = "https://jwxt.whut.edu.cn/jwapp/sys/wdkwapp/";
+function jsString(s) {
+    return JSON.stringify(s);
+}
+function buildExamFetchScript(messages) {
+    return `(async function() {
+  var log = function(s){ receive(JSON.stringify({type:'debug', message:s})); };
+  function post(payload) {
+    receive(JSON.stringify(payload));
+  }
+  function waitForReady(timeout) {
+    var started = Date.now();
+    return new Promise(function(resolve, reject) {
+      (function tick() {
+        var jq = window.jQuery || window.$;
+        if (jq && jq.jwAjax && window.CACHE_DQXNXQ && CACHE_DQXNXQ.XNXQDM) {
+          resolve(jq);
+          return;
+        }
+        if (Date.now() - started > timeout) {
+          var error = new Error(${jsString(messages.fetchUserFailed)});
+          error.code = 'PAGE_READY_TIMEOUT';
+          reject(error);
+          return;
+        }
+        setTimeout(tick, 200);
+      })();
+    });
+  }
+  function queryExams($, term) {
+    return new Promise(function(resolve, reject) {
+      var done = false;
+      $.jwAjax({
+        url: '/api/wdks/queryMyExamArrangeMent.do',
+        data: { XNXQDM: term },
+        successMsg: '',
+        success: function(resp) {
+          done = true;
+          resolve(resp || {});
+        },
+        error: function(err) {
+          done = true;
+          var error = err instanceof Error ? err : new Error('Request failed');
+          if (!error.code) error.code = 'REQUEST_FAILED';
+          reject(error);
+        }
+      });
+      setTimeout(function() {
+        if (!done) {
+          var error = new Error(${jsString(messages.importTimeout)});
+          error.code = 'NETWORK_TIMEOUT';
+          reject(error);
+        }
+      }, 15000);
+    });
+  }
+  try {
+    var $ = await waitForReady(12000);
+    var term = CACHE_DQXNXQ && CACHE_DQXNXQ.XNXQDM;
+    log('exam term=' + term);
+    if (!term) {
+      post({type:'error', code:'PAGE_DATA_MISSING', message:${jsString(messages.fetchUserFailed)}});
+      return;
+    }
+    var resp = await queryExams($, term);
+    post({
+      type: 'examRows',
+      term: term,
+      arranged: Array.isArray(resp.arranged) ? resp.arranged : [],
+      notArranged: Array.isArray(resp.notArranged) ? resp.notArranged : [],
+      showKeys: Array.isArray(resp.showkeys) ? resp.showkeys : []
+    });
+  } catch(e) {
+    post({
+      type:'error',
+      code: (e && e.code) ? String(e.code) : 'SCRIPT_FAILURE',
+      message: (e && e.message) ? String(e.message) : '',
+      name: (e && e.name) ? String(e.name) : '',
+      stack: (e && e.stack) ? String(e.stack).substring(0, 1000) : '',
+      url: (typeof location !== 'undefined' && location.href) ? location.href : ''
+    });
+  }
+})(); true;`;
+}
+function isExamRowsMessage(msg) {
+    return (typeof msg === "object" &&
+        msg !== null &&
+        "type" in msg &&
+        msg.type === "examRows");
+}
+function clean(value) {
+    const text = value == null ? "" : String(value).trim();
+    if (!text || text === "null" || text === "-")
+        return "";
+    return text;
+}
+function normalizeExamClock(value) {
+    return value.replace(/^(\d):/, "0$1:");
+}
+function parseExamTime(value) {
+    const text = clean(value);
+    const match = /^(\d{4})年(\d{1,2})月(\d{1,2})日\s+(\d{1,2}:\d{2})-(\d{1,2}:\d{2})/.exec(text) ??
+        /^(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}:\d{2})-(\d{1,2}:\d{2})/.exec(text);
+    if (!match) {
+        return { date: "", startTime: "", endTime: "", startAt: "", endAt: "" };
+    }
+    const year = match[1];
+    const month = match[2].padStart(2, "0");
+    const day = match[3].padStart(2, "0");
+    const startTime = normalizeExamClock(match[4]);
+    const endTime = normalizeExamClock(match[5]);
+    const date = `${year}-${month}-${day}`;
+    return {
+        date,
+        startTime,
+        endTime,
+        startAt: `${date}T${startTime}:00+08:00`,
+        endAt: `${date}T${endTime}:00+08:00`,
+    };
+}
+function titleId(row, index) {
+    const parts = [clean(row.KCH), clean(row.KXH), clean(row.KCM), String(index)];
+    return parts.filter(Boolean).join("-");
+}
+function normalizeExam(row, index) {
+    const time = parseExamTime(row.KSSJMS);
+    const rawStatus = clean(row.KSZT);
+    return {
+        id: titleId(row, index),
+        courseName: clean(row.KCM),
+        courseCode: clean(row.KCH),
+        sequence: clean(row.KXH),
+        rawStatus,
+        ...time,
+        place: clean(row.JASMC),
+        seatNo: clean(row.ZWH),
+        teacher: clean(row.SKJS),
+        description: clean(row.KSSM),
+    };
+}
+function normalizeNotArranged(row, index) {
+    const courseCode = clean(row.KCH);
+    const courseName = clean(row.KCM);
+    return {
+        id: [courseCode, courseName, String(index)].filter(Boolean).join("-"),
+        courseName,
+        courseCode,
+        teacher: clean(row.SKJS),
+    };
+}
+function normalizeExamRowsMessage(msg) {
+    const arranged = Array.isArray(msg.arranged)
+        ? msg.arranged.filter((row) => typeof row === "object" && row !== null)
+        : [];
+    const notArrangedRows = Array.isArray(msg.notArranged)
+        ? msg.notArranged.filter((row) => typeof row === "object" && row !== null)
+        : [];
+    return {
+        term: msg.term ? String(msg.term) : "",
+        exams: arranged.map(normalizeExam).sort((a, b) => {
+            const aTime = Date.parse(a.startAt);
+            const bTime = Date.parse(b.startAt);
+            if (Number.isNaN(aTime) && Number.isNaN(bTime))
+                return 0;
+            if (Number.isNaN(aTime))
+                return 1;
+            if (Number.isNaN(bTime))
+                return -1;
+            return aTime - bTime;
+        }),
+        notArranged: notArrangedRows.map(normalizeNotArranged),
+    };
+}
+(async function() {
+  var log = function(s){ receive(JSON.stringify({type:'debug', message:s})); };
+  function post(payload) {
+    receive(JSON.stringify(payload));
+  }
+  function waitForReady(timeout) {
+    var started = Date.now();
+    return new Promise(function(resolve, reject) {
+      (function tick() {
+        var jq = window.jQuery || window.$;
+        if (jq && jq.jwAjax && window.CACHE_DQXNXQ && CACHE_DQXNXQ.XNXQDM) {
+          resolve(jq);
+          return;
+        }
+        if (Date.now() - started > timeout) {
+          var error = new Error("当前教务会话未返回学号或学期，请重新登录后重试。");
+          error.code = 'PAGE_READY_TIMEOUT';
+          reject(error);
+          return;
+        }
+        setTimeout(tick, 200);
+      })();
+    });
+  }
+  function queryExams($, term) {
+    return new Promise(function(resolve, reject) {
+      var done = false;
+      $.jwAjax({
+        url: '/api/wdks/queryMyExamArrangeMent.do',
+        data: { XNXQDM: term },
+        successMsg: '',
+        success: function(resp) {
+          done = true;
+          resolve(resp || {});
+        },
+        error: function(err) {
+          done = true;
+          var error = err instanceof Error ? err : new Error('Request failed');
+          if (!error.code) error.code = 'REQUEST_FAILED';
+          reject(error);
+        }
+      });
+      setTimeout(function() {
+        if (!done) {
+          var error = new Error("请求超时，请重新尝试。");
+          error.code = 'NETWORK_TIMEOUT';
+          reject(error);
+        }
+      }, 15000);
+    });
+  }
+  try {
+    var $ = await waitForReady(12000);
+    var term = CACHE_DQXNXQ && CACHE_DQXNXQ.XNXQDM;
+    log('exam term=' + term);
+    if (!term) {
+      post({type:'error', code:'PAGE_DATA_MISSING', message:"当前教务会话未返回学号或学期，请重新登录后重试。"});
+      return;
+    }
+    var resp = await queryExams($, term);
+    post({
+      type: 'examRows',
+      term: term,
+      arranged: Array.isArray(resp.arranged) ? resp.arranged : [],
+      notArranged: Array.isArray(resp.notArranged) ? resp.notArranged : [],
+      showKeys: Array.isArray(resp.showkeys) ? resp.showkeys : []
+    });
+  } catch(e) {
+    post({
+      type:'error',
+      code: (e && e.code) ? String(e.code) : 'SCRIPT_FAILURE',
+      message: (e && e.message) ? String(e.message) : '',
+      name: (e && e.name) ? String(e.name) : '',
+      stack: (e && e.stack) ? String(e.stack).substring(0, 1000) : '',
+      url: (typeof location !== 'undefined' && location.href) ? location.href : ''
+    });
+  }
+})(); true;
+})();
